@@ -1,0 +1,250 @@
+# Import the built-in CSV module to read and write spreadsheet data
+import csv
+# Import specific page sizing tools from reportlab for the PDF output
+from reportlab.lib.pagesizes import landscape, A4
+# Import the table and document building classes from reportlab
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+# Import the color library from reportlab to draw borders
+from reportlab.lib import colors
+
+# Define a function to isolate the maximum marks from the header titles
+def get_max(header):
+    # Try to split the header string at the '/' character and grab the numerical part
+    try: return float(header.split('/')[1].strip())
+    # If the split fails (e.g., the column isn't a grade), return 0.0
+    except: return 0.0
+
+# Initialize an empty dictionary to hold all student records
+students = {}
+# Initialize a dictionary to store the maximum possible marks for each grade section
+max_scores = {}
+
+# Create a mapping of section names to their corresponding CSV file and grade weight
+sections = {
+    'CA1': ('Grades CA 1.csv', 15),
+    'CA2': ('Grades CA 2.csv', 15),
+    'EXERCISE': ('Grades Exercises.csv', 15),
+    'FINAL': ('Grades Final Exam.csv', 40)
+}
+
+# Begin a loop over each grading section defined in the dictionary above
+for sec, (file, weight) in sections.items():
+    # Set a temporary counter for the maximum mark of the current file to 0
+    m_max = 0
+    # Open the current CSV file for reading (utf-8-sig removes Byte Order Marks)
+    with open(file, 'r', encoding='utf-8-sig') as f:
+        # Load the file into a DictReader, explicitly stating the files use semicolons
+        reader = csv.DictReader(f, delimiter=';')
+        
+        # Loop through every column header found in the file
+        for col in reader.fieldnames:
+            # If the column is a grade column (not a name or ID)
+            if col not in ['Last name', 'First name', 'ID', '']: 
+                # Add its maximum value to the section's running total
+                m_max += get_max(col)
+        # Store the final calculated maximum mark for the section
+        max_scores[sec] = m_max
+        
+        # Loop through every student's row of data in the file
+        for row in reader:
+            # Extract the student's ID number
+            sid = row.get('ID')
+            # If there is no ID, skip this row (handles empty lines)
+            if not sid: continue
+            
+            # If the student isn't in our main dictionary yet, create their profile
+            if sid not in students:
+                # Add their ID, Last Name, and First Name
+                students[sid] = {'ID': sid, 'Last name': row.get('Last name', ''), 'First name': row.get('First name', '')}
+            
+            # Sum up every numerical score in the row, ignoring names/IDs and empty cells
+            marks = sum(float(v) for k, v in row.items() if k not in ['Last name', 'First name', 'ID', ''] and v.strip())
+            # Save the student's calculated raw mark to their profile for this section
+            students[sid][f'{sec} Marks'] = marks
+
+# Initialize a dictionary to map group numbers to project grades
+group_map = {}
+# Open the file containing the final project grades
+with open('Grades Groups.csv', 'r', encoding='utf-8-sig') as f:
+    # Loop through each row in the project grades file
+    for row in csv.DictReader(f, delimiter=';'):
+        # If the row has a 'Group' listed
+        if row.get('Group'): 
+            # Save the group's grade (out of 10) to the group_map dictionary
+            group_map[row['Group']] = float(row.get('Grade /10', 0))
+
+# Open the file mapping individual students to their project groups
+with open('Groups.csv', 'r', encoding='utf-8-sig') as f:
+    # Loop through each row mapping students to groups
+    for row in csv.DictReader(f, delimiter=';'):
+        # Extract the student's ID
+        sid = row.get('ID')
+        # If the student exists in our master dictionary
+        if sid in students:
+            # Assign the group number to the student's profile
+            students[sid]['Group'] = row.get('Group', 'N/A')
+            # Assign the grade corresponding to their group to their profile
+            students[sid]['PROJECT Marks'] = group_map.get(row.get('Group'), 0.0)
+
+# Manually set the max score for the project to 10.0
+max_scores['PROJECT'] = 10.0 
+
+# Begin a loop over all fully compiled student profiles
+for sid, s in students.items():
+    # Set a running total for the student's final normalized percentage
+    total_norm = 0
+    # Set a running total for the student's absolute total marks
+    total_marks = 0
+    
+    # Loop over all 5 grading pillars with their respective weights
+    for sec, weight in [('CA1', 15), ('CA2', 15), ('EXERCISE', 15), ('PROJECT', 15), ('FINAL', 40)]:
+        # Retrieve the student's raw mark (defaulting to 0.0 if missing)
+        raw = s.get(f'{sec} Marks', 0.0)
+        # Retrieve the maximum possible mark for this section
+        max_val = max_scores[sec]
+        
+        # Calculate the Achieved % (out of 100), protecting against division by zero
+        s[f'{sec} Perc'] = (raw / max_val * 100) if max_val else 0
+        # Calculate the Normalized % (out of the section's weight)
+        s[f'{sec} Norm'] = (raw / max_val * weight) if max_val else 0
+        
+        # Add the normalized percentage to the student's final score tally
+        total_norm += s[f'{sec} Norm']
+        # Add the raw marks to the absolute total tally
+        total_marks += raw
+    
+    # Save the final calculated total percentage to the student's profile
+    s['Total %'] = total_norm
+    # Save the absolute raw marks to the student's profile
+    s['Total Marks'] = total_marks
+    
+    # Use standard grading brackets to assign a letter grade
+    if total_norm >= 85: g = 'A+'
+    elif total_norm >= 80: g = 'A'
+    elif total_norm >= 75: g = 'A-'
+    elif total_norm >= 70: g = 'B+'
+    elif total_norm >= 65: g = 'B'
+    elif total_norm >= 60: g = 'B-'
+    elif total_norm >= 55: g = 'C+'
+    elif total_norm >= 50: g = 'C'
+    elif total_norm >= 45: g = 'D+'
+    elif total_norm >= 40: g = 'D'
+    else: g = 'F'
+    
+    # Save the assigned letter grade to the student's profile
+    s['Grade'] = g
+
+# Sort the students chronologically by their ID numbers
+sorted_students = sorted(students.values(), key=lambda x: str(x['ID']))
+
+# Define the top row of headers for the output files
+# Note the split of Total Marks and Total Percentage
+csv_header_1 = [
+    "Last name", "First name", "ID", 
+    "CA1 (15)", "", "", 
+    "CA2", "", "", 
+    "Exercise", "", "", 
+    "Project Group", "Project", "", "", 
+    "Finals", "", "", 
+    "Total", "", "Grade" 
+]
+
+# Define the bottom row of sub-headers for the output files
+# Explicitly labelling Marks and % underneath the Total block
+csv_header_2 = [
+    "", "", "", 
+    "Marks", "% Ach", "% Norm", 
+    "Marks", "% Ach", "% Norm", 
+    "Marks", "% Ach", "% Norm", 
+    "", "Marks", "% Ach", "% Norm", 
+    "Marks", "% Ach", "% Norm", 
+    "Marks", "%", "" 
+]
+
+# Combine the two header rows into the master data list
+csv_data = [csv_header_1, csv_header_2]
+
+# Loop through every sorted student profile
+for s in sorted_students:
+    # Append a formatted row of data to the master data list, ensuring 2 decimal places (.2f)
+    csv_data.append([
+        s['Last name'], s['First name'], s['ID'],
+        f"{s.get('CA1 Marks', 0):.2f}", f"{s.get('CA1 Perc', 0):.2f}", f"{s.get('CA1 Norm', 0):.2f}",
+        f"{s.get('CA2 Marks', 0):.2f}", f"{s.get('CA2 Perc', 0):.2f}", f"{s.get('CA2 Norm', 0):.2f}",
+        f"{s.get('EXERCISE Marks', 0):.2f}", f"{s.get('EXERCISE Perc', 0):.2f}", f"{s.get('EXERCISE Norm', 0):.2f}",
+        str(s.get('Group', '')), f"{s.get('PROJECT Marks', 0):.2f}", f"{s.get('PROJECT Perc', 0):.2f}", f"{s.get('PROJECT Norm', 0):.2f}",
+        f"{s.get('FINAL Marks', 0):.2f}", f"{s.get('FINAL Perc', 0):.2f}", f"{s.get('FINAL Norm', 0):.2f}",
+        f"{s.get('Total Marks', 0):.2f}", f"{s['Total %']:.2f}", s['Grade']
+    ])
+
+# Set the filename for the CSV output
+csv_file = "Final_Calculated_Grades_Formatted.csv"
+# Open the CSV file for writing
+with open(csv_file, 'w', newline='', encoding='utf-8-sig') as f:
+    
+    # -----------------------------------------------------------------------------------
+    # CRITICAL: By injecting `sep=;` at the absolute top of the file, Excel is forced 
+    # to open it correctly into formatted table columns regardless of regional defaults, 
+    # while standard text editors (Notepad) will perfectly display the required semicolons.
+    # -----------------------------------------------------------------------------------
+    f.write('sep=;\n')
+    
+    # Create the CSV writer object, explicitly passing semicolon as the delimiter
+    writer = csv.writer(f, delimiter=';')
+    # Write the entirety of the master data list to the CSV file
+    writer.writerows(csv_data)
+
+# Set the filename for the PDF output
+pdf_file = "Student_Grades_Report.pdf"
+# Initialize the PDF document in A4 Landscape mode with reduced margins
+pdf = SimpleDocTemplate(pdf_file, pagesize=landscape(A4), rightMargin=10, leftMargin=10, topMargin=10, bottomMargin=10)
+
+# Create a ReportLab Table object passing in the master data list
+table = Table(csv_data)
+# Define the complex TableStyle rules for merging and layout
+style = TableStyle([
+    # Center all text horizontally
+    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+    # Center all text vertically
+    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    # Add a thin black grid to every cell
+    ('GRID', (0, 0), (-1, -1), 0.25, colors.black),
+    # Make the first two rows (the headers) bold
+    ('FONTNAME', (0, 0), (-1, 1), 'Helvetica-Bold'),
+    # Shrink the font slightly to accommodate the extra 22nd column we just added
+    ('FONTSIZE', (0, 0), (-1, -1), 5.2), 
+    # Add minor padding to the bottom of the cells
+    ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+    # Add minor padding to the top of the cells
+    ('TOPPADDING', (0,0), (-1,-1), 2),
+    
+    # Merge cells horizontally for the CA1 category
+    ('SPAN', (3, 0), (5, 0)),
+    # Merge cells horizontally for the CA2 category
+    ('SPAN', (6, 0), (8, 0)),
+    # Merge cells horizontally for the Exercise category
+    ('SPAN', (9, 0), (11, 0)),
+    # Merge cells horizontally for the Project category
+    ('SPAN', (13, 0), (15, 0)),
+    # Merge cells horizontally for the Finals category
+    ('SPAN', (16, 0), (18, 0)),
+    
+    # Merge the new Total column horizontally to encompass both 'Marks' and '%'
+    ('SPAN', (19, 0), (20, 0)),
+    
+    # Merge cells vertically for the Last name column
+    ('SPAN', (0, 0), (0, 1)),
+    # Merge cells vertically for the First name column
+    ('SPAN', (1, 0), (1, 1)),
+    # Merge cells vertically for the ID column
+    ('SPAN', (2, 0), (2, 1)),
+    # Merge cells vertically for the Project Group column
+    ('SPAN', (12, 0), (12, 1)),
+    
+    # Merge cells vertically for the Grade column (Now column 21 due to the new addition)
+    ('SPAN', (21, 0), (21, 1)),
+])
+# Apply the style rules to the table object
+table.setStyle(style)
+# Build and save the physical PDF document
+pdf.build([table])
