@@ -1,0 +1,159 @@
+import csv
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+from reportlab.lib import colors
+
+# Extract the maximum mark from the column headers
+def get_max(header):
+    try: return float(header.split('/')[1].strip())
+    except: return 0.0
+
+students = {}
+max_scores = {}
+
+# Map grade sections to files and their percentage weights
+sections = {
+    'CA1': ('Grades CA 1.csv', 15),
+    'CA2': ('Grades CA 2.csv', 15),
+    'EXERCISE': ('Grades Exercises.csv', 15),
+    'FINAL': ('Grades Final Exam.csv', 40)
+}
+
+# 1. Load basic grades and compute raw marks
+for sec, (file, weight) in sections.items():
+    m_max = 0
+    with open(file, 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f, delimiter=';')
+        
+        # Calculate section max
+        for col in reader.fieldnames:
+            if col not in ['Last name', 'First name', 'ID', '']: 
+                m_max += get_max(col)
+        max_scores[sec] = m_max
+        
+        # Tally each student
+        for row in reader:
+            sid = row.get('ID')
+            if not sid: continue
+            if sid not in students:
+                students[sid] = {'ID': sid, 'Last name': row.get('Last name', ''), 'First name': row.get('First name', '')}
+            
+            marks = sum(float(v) for k, v in row.items() if k not in ['Last name', 'First name', 'ID', ''] and v.strip())
+            students[sid][f'{sec} Marks'] = marks
+
+# 2. Append project group grades
+group_map = {}
+with open('Grades Groups.csv', 'r', encoding='utf-8-sig') as f:
+    for row in csv.DictReader(f, delimiter=';'):
+        if row.get('Group'): 
+            group_map[row['Group']] = float(row.get('Grade /10', 0))
+
+with open('Groups.csv', 'r', encoding='utf-8-sig') as f:
+    for row in csv.DictReader(f, delimiter=';'):
+        sid = row.get('ID')
+        if sid in students:
+            students[sid]['Group'] = row.get('Group', 'N/A')
+            students[sid]['PROJECT Marks'] = group_map.get(row.get('Group'), 0.0)
+
+max_scores['PROJECT'] = 10.0 
+
+# 3. Calculate sub-metrics and final grades
+for sid, s in students.items():
+    total_norm = 0
+    for sec, weight in [('CA1', 15), ('CA2', 15), ('EXERCISE', 15), ('PROJECT', 15), ('FINAL', 40)]:
+        raw = s.get(f'{sec} Marks', 0.0)
+        max_val = max_scores[sec]
+        
+        s[f'{sec} Perc'] = (raw / max_val * 100) if max_val else 0
+        s[f'{sec} Norm'] = (raw / max_val * weight) if max_val else 0
+        total_norm += s[f'{sec} Norm']
+    
+    s['Total %'] = total_norm
+    if total_norm >= 85: g = 'A+'
+    elif total_norm >= 80: g = 'A'
+    elif total_norm >= 75: g = 'A-'
+    elif total_norm >= 70: g = 'B+'
+    elif total_norm >= 65: g = 'B'
+    elif total_norm >= 60: g = 'B-'
+    elif total_norm >= 55: g = 'C+'
+    elif total_norm >= 50: g = 'C'
+    elif total_norm >= 45: g = 'D+'
+    elif total_norm >= 40: g = 'D'
+    else: g = 'F'
+    s['Grade'] = g
+
+sorted_students = sorted(students.values(), key=lambda x: str(x['ID']))
+
+# 4. Construct Layout (Matching the provided visual spreadsheet structure)
+csv_header_1 = [
+    "Last name", "First name", "ID", 
+    "CA1 (15)", "", "", 
+    "CA2", "", "", 
+    "Exercise", "", "", 
+    "Project Group", "Project", "", "", 
+    "Finals", "", "", 
+    "Total Perc/marks", "Grade"
+]
+
+csv_header_2 = [
+    "", "", "", 
+    "Marks", "% Ach", "% Norm", 
+    "Marks", "% Ach", "% Norm", 
+    "Marks", "% Ach", "% Norm", 
+    "", "Marks", "% Ach", "% Norm", 
+    "Marks", "% Ach", "% Norm", 
+    "", ""
+]
+
+csv_data = [csv_header_1, csv_header_2]
+
+# Append student data
+for s in sorted_students:
+    csv_data.append([
+        s['Last name'], s['First name'], s['ID'],
+        f"{s.get('CA1 Marks', 0):.2f}", f"{s.get('CA1 Perc', 0):.2f}", f"{s.get('CA1 Norm', 0):.2f}",
+        f"{s.get('CA2 Marks', 0):.2f}", f"{s.get('CA2 Perc', 0):.2f}", f"{s.get('CA2 Norm', 0):.2f}",
+        f"{s.get('EXERCISE Marks', 0):.2f}", f"{s.get('EXERCISE Perc', 0):.2f}", f"{s.get('EXERCISE Norm', 0):.2f}",
+        str(s.get('Group', '')), f"{s.get('PROJECT Marks', 0):.2f}", f"{s.get('PROJECT Perc', 0):.2f}", f"{s.get('PROJECT Norm', 0):.2f}",
+        f"{s.get('FINAL Marks', 0):.2f}", f"{s.get('FINAL Perc', 0):.2f}", f"{s.get('FINAL Norm', 0):.2f}",
+        f"{s['Total %']:.2f}", s['Grade']
+    ])
+
+# 5. Output to standard comma-separated CSV
+csv_file = "Final_Calculated_Grades_Formatted.csv"
+with open(csv_file, 'w', newline='', encoding='utf-8-sig') as f:
+    writer = csv.writer(f)
+    writer.writerows(csv_data)
+
+# 6. Generate the PDF with structural cell spanning
+pdf_file = "Student_Grades_Report.pdf"
+pdf = SimpleDocTemplate(pdf_file, pagesize=landscape(A4), rightMargin=10, leftMargin=10, topMargin=10, bottomMargin=10)
+
+table = Table(csv_data)
+style = TableStyle([
+    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ('GRID', (0, 0), (-1, -1), 0.25, colors.black),
+    ('FONTNAME', (0, 0), (-1, 1), 'Helvetica-Bold'),
+    ('FONTSIZE', (0, 0), (-1, -1), 5.5), 
+    ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+    ('TOPPADDING', (0,0), (-1,-1), 2),
+    
+    # Merge horizontal headers for aesthetic grouping
+    ('SPAN', (3, 0), (5, 0)),   # CA1
+    ('SPAN', (6, 0), (8, 0)),   # CA2
+    ('SPAN', (9, 0), (11, 0)),  # Exercise
+    ('SPAN', (13, 0), (15, 0)), # Project
+    ('SPAN', (16, 0), (18, 0)), # Finals
+    
+    # Vertically merge columns that don't possess a sub-header
+    ('SPAN', (0, 0), (0, 1)),   # Last name
+    ('SPAN', (1, 0), (1, 1)),   # First name
+    ('SPAN', (2, 0), (2, 1)),   # ID
+    ('SPAN', (12, 0), (12, 1)), # Project Group
+    ('SPAN', (19, 0), (19, 1)), # Total
+    ('SPAN', (20, 0), (20, 1)), # Grade
+])
+
+table.setStyle(style)
+pdf.build([table])
